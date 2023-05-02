@@ -1,0 +1,878 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+
+COMMAND=""
+CSV_FILES=""
+GENDER=""
+DATE_A=""
+DATE_B=""
+WIDTH=""
+WIDTH_DEF=""
+HEAD="id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs"
+
+WIDTH_CHCK=1
+IS_COMMAND=0
+IS_FILE=0
+IS_GENDER=0
+IS_WIDTH=0
+IS_DATE_A=0
+IS_DATE_B=0
+IS_FILTER=0
+
+
+# ------- funkcie pre prikazy -------
+
+print_help(){
+    RED='\033[0;31m'
+    NC='\033[0m'
+    echo "${RED}NAME${NC}"
+    echo "      ${RED}corona${NC} - COVID-19 infected people record analyzer"
+    echo "${RED}SYNOPSIS${NC}"
+    echo "      ${RED}corona [-h] [FILTERS] [COMMAND] [LOG [LOG2 [...]]${NC}"
+    echo "${RED}COMMANDS${NC}"
+    echo "      ${RED}infected${NC} - counts number of infected"
+    echo "      ${RED}merge${NC} - merges several files into one, maintaining original order"
+    echo "      ${RED}gender${NC} - lists number of infected for each gender"
+    echo "      ${RED}age${NC} - lists number of infected persons by age"
+    echo "      ${RED}daily${NC} - lists number of infected for individual days"
+    echo "      ${RED}monthly${NC} - lists number of infected for individual months"
+    echo "      ${RED}yearly${NC} - lists number of infected for individual years"
+    echo "      ${RED}countries${NC} - lists number of infected for individual countries (except Czech Republic [CZ])"
+    echo "      ${RED}districts${NC} - lists number of infected for individual districts"
+    echo "      ${RED}regions${NC} - lists number of infected for individual regions"
+    echo "${RED}FILTERS${NC}"
+    echo "      ${RED}-a DATETIME${NC} - after: only records AFTER this date are considered, including this date"
+    echo "      ${RED}-B DATETIME${NC} - before: only records BEFORE this date are considered, including this date"
+    echo "          ${RED}DATETIME${NC} - expected format of ${RED}DATETIME${NC} is ${RED}YYYY-MM-YY${NC}"
+    echo "      ${RED}-g GENDER${NC} - only records of given gender"
+    echo "          ${RED}GENDER${NC} - expected format of ${RED}GENDER${NC} is ${RED}M${NC} (men) of ${RED}Z${NC} (women)"
+    echo "      ${RED}-s [WIDHT]${NC} - for commands ${RED}gender${NC}, ${RED}age${NC}, ${RED}daily${NC}, ${RED}monthly${NC}, ${RED}yearly${NC}, ${RED}countries${NC}, ${RED}districts${NC} 
+                   and ${RED}regions${NC} displays data graphically in form of histograms"
+    echo "          ${RED}WIDTH${NC} - optional parameter ${RED}WIDTH${NC} sets width of histogram (lenght of longest line),
+                  ${RED}WIDTH${NC} is expected to be unsigned integer,
+                  if ${RED}WIDTH${NC} is not entered, the width is set by default"
+    echo "${RED}-h${NC} - prints help with brief description of commands and filters"
+}
+
+printGender(){
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            BEGIN{
+                gender_count[1]=0
+                gender_count[2]=0
+            }{
+                gender[1]="M"
+                gender[2]="Z"
+                if($4 != ""){
+                    if($4 == "M"){
+                        gender_count[1]++
+                    }else{
+                        gender_count[2]++
+                    }
+                }else if($4 == ""){
+                    none++
+                }
+            } END {
+                for (i = 1; i < 3; i++){
+                    printf("%s: %s\r\n", gender[i], gender_count[i])
+                }
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+            }
+        ')
+}
+
+printDaily(){
+    NONE=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($2 == ""){
+                    none++
+                }
+            } END {
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+            }
+        ')
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+
+                if($2 != ""){
+                    date_count[$2]++
+                    date[$2]=$2
+                }
+            } END {
+                for (i in date) {
+                    printf("%s: %s\r\n", date[i], date_count[i])
+                }
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+printMonthly(){
+    NONE=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($2 == ""){
+                    none++
+                }
+            } END {
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+            }
+        ')
+    MONTH_FILTERED=$(echo "$CSV_FILES" | cut -d , -f 2 | cut -d - -f 1,2)
+    RESULT=$(echo "$MONTH_FILTERED" | awk -F ',' \
+        '
+            {
+                if($1 != ""){
+                    month_count[$1]++
+                    month[$1]=$1
+                }
+            } END {
+                for (i in month) {
+                    printf("%s: %s\r\n", month[i], month_count[i])
+                }
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+printYearly(){
+    NONE=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($2 == ""){
+                    none++
+                }
+            } END {
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+            }
+        ')
+    YEAR_FILTERED=$(echo "$CSV_FILES" | cut -d , -f 2 | cut -d - -f 1)
+    RESULT=$(echo "$YEAR_FILTERED" | awk -F ',' \
+        '
+            {
+                if($1 != ""){
+                    year_count[$1]++
+                    year[$1]=$1
+                }
+            } END {
+                for (i in year) {
+                    printf("%s: %s\r\n", year[i], year_count[i])
+                }
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+printCountries(){
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($8 != "" && $8 != "CZ"){
+                    country_count[$8]++
+                    country[$8]=$8
+                } 
+            } END {
+                for (i in country) {
+                    printf("%s: %s\r\n", country[i], country_count[i])
+                } 
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+printAge(){
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                age[1]="0-5"
+                age[2]="6-15"
+                age[3]="16-25"
+                age[4]="26-35"
+                age[5]="36-45"
+                age[6]="46-55"
+                age[7]="56-65"
+                age[8]="66-75"
+                age[9]="76-85"
+                age[10]="86-95"
+                age[11]="96-105"
+                age[12]=">105"
+                age[13]="None"
+
+                if($3 >= 0 && $3 <= 5){
+                    age_count[1]++
+                }else if($3 >= 6 && $3 <= 15 ){
+                    age_count[2]++
+                }else if($3 >= 16 && $3 <= 25 ){
+                    age_count[3]++
+                }else if($3 >= 26 && $3 <= 35 ){
+                    age_count[4]++
+                }else if($3 >= 36 && $3 <= 45 ){
+                    age_count[5]++
+                }else if($3 >= 46 && $3 <= 55 ){
+                    age_count[6]++
+                }else if($3 >= 56 && $3 <= 65 ){
+                    age_count[7]++
+                }else if($3 >= 66 && $3 <= 75 ){
+                    age_count[8]++
+                }else if($3 >= 76 && $3 <= 85 ){
+                    age_count[9]++
+                }else if($3 >= 86 && $3 <= 95 ){
+                    age_count[10]++
+                }else if($3 >= 96 && $3 <= 105 ){
+                    age_count[11]++
+                }else if($3 > 105 ){
+                    age_count[12]++
+                }else if($3 == ""){
+                    none++
+                }
+            } END {
+                for (i = 1; i < 13; i++) {
+                    printf("%-6s: %s\r\n", age[i], age_count[i])
+                }
+                if(none > 0){
+                    printf("%-6s: %s\r\n","None", none)
+                }
+            }
+        ')
+}
+
+printDistricts(){
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($6 != ""){
+                    district_count[$6]++
+                    district[$6]=$6
+                }else if($6 == ""){
+                    none++
+                }
+            } END {
+                for (i in district) {
+                    printf("%s: %s\r\n", district[i], district_count[i])
+                }
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+                
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+printRegions(){
+    RESULT=$(echo "$CSV_FILES" | awk -F ',' \
+        '
+            {
+                if($5 != ""){
+                    region_count[$5]++
+                    region[$5]=$5
+                }else if($5 == ""){
+                    none++
+                }
+            } END {
+                for (i in region) {
+                    printf("%s: %s\r\n", region[i], region_count[i])
+                }
+                if(none > 0){
+                    printf("None: %s\r\n", none)
+                }
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+}
+
+#validacia datumu
+validateDate(){
+    CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' \
+    '
+        {
+            if($2 == ""){
+                print $0;
+            }
+            else if($2 ~ /^[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-([0][1-9]|[1-2][0-9]|3[0-1])/){
+                
+                if($2 ~ /^[0-9]{4}-0[4]{1}.*$/ || $2 ~ /^[0-9]{4}-0[6]{1}.*$/ || $2 ~ /^[0-9]{4}-0[9]{1}.*$/ || $2 ~ /^[0-9]{4}-1[1]{1}.*$/){
+                    
+                    if($2 ~ /^.*(0[1-9]{1}|[1-2]{1}[0-9]{1}|3[0]{1})$/){
+                        
+                        print $0
+                    }else{
+                        
+                        print "Invalid date: " $0 | "cat 1>&2"
+                    }
+                }else if($2 ~ /^[0-9]{4}-0[2]{1}.*$/){
+                    
+                    if($2 ~ /^.*(0[1-9]{1}|[1-2]{1}[0-9]{1})$/){
+                        
+                        print $0
+                    }else{
+                        
+                        print "Invalid date: " $0 | "cat 1>&2"
+                    }
+                }else{
+                    
+                    print $0
+                }
+            }else{
+                
+                print "Invalid date: " $0 | "cat 1>&2"
+            }
+        }
+    ')
+}
+
+#validacia veku
+validateAge(){
+    ERORR=$(echo "$CSV_FILES" | awk -F ',' '$3 !~ /^[0-9]+$/ && $3 !="" {
+        print "Invalid age: ",$0;
+    }')
+    CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' '$3 ~ /^[0-9]+$/ || $3 == "" {print}
+    ')
+
+    if [ -n "$ERORR" ]; then
+        echo "$ERORR" >&2
+    fi
+}
+
+#funkcia sluzi na korekciu poradia vystupu
+printResNone(){
+    if [ -n "$RESULT" ]; then
+        echo "$RESULT"
+    fi
+    if [ -n "$NONE" ]; then
+        echo "$NONE"
+    fi
+}
+
+#funkcia vypisuje histogram pre prikazy districts, regions a counties
+printHistoLand(){
+    RESULT=$(echo "$RESULT" | awk -F ':' -v width="$WIDTH" -v widthDef="$WIDTH_DEF" \
+        '
+            BEGIN{
+                widthBool = 0
+                if(width == ""){
+                    widthBool = 1
+                    if(widthDef == 1){
+                        width = 100
+                    }else if(widthDef == 2){
+                        width = 1000
+                    }else if(widthDef == 3){
+                        width = 10000
+                    }
+                }
+            }{
+                name[$1]=$1
+                value[$1]=$2
+            } END {
+                max_value=0
+                if(widthBool == 0){
+                    for(i in name)
+                    {
+                        if(max_value < value[i]){
+                            max_value = value[i]
+                        }
+                        if(none > max_value){
+                        max_value=none
+                        }        
+                    }
+                }
+                for (i in name){
+                    printf("%s: ", name[i])
+                    if(widthBool == 0){
+                        sharpCount = int((value[i]/max_value)*width)
+                    }else{
+                        sharpCount = int(value[i]/width)
+                    }
+                    for(k=1; k <= sharpCount; k++){
+                        printf("#")
+                    }
+                    printf("\r\n")
+                }
+            }
+        ')
+    RESULT=$(echo "$RESULT" | sort)
+    echo "$RESULT"
+}
+
+#funkcia vypisuje histogram pre prikazy date a gender
+printHistoDateG(){
+    NONE=$(echo "$NONE" | cut -d ':' -f 2)
+    NONE=$(echo "$NONE" | cut -d ' ' -f 2)
+    RESULT=$(echo "$RESULT" | awk -F ':' -v width="$WIDTH" -v widthDef="$WIDTH_DEF" -v none="$NONE" \
+        '
+            BEGIN{
+                widthBool = 0
+                if(width == ""){
+                    widthBool = 1
+                    if(widthDef == 1){
+                        width = 500
+                    }else if(widthDef == 2){
+                        width = 10000
+                    }else if(widthDef == 3){
+                        width=100000
+                    }else if(widthDef == 4){
+                        width=100000
+                    }
+                }
+            }{
+                name[$1]=$1
+                value[$1]=$2
+            } END {
+                max_value=1
+                if(widthBool == 0){
+                    for(i in name)
+                    {
+                        if(max_value < value[i]){
+                            max_value = value[i]
+                        }        
+                    }
+                    if(none > max_value){
+                        max_value=none
+                    }
+                }
+                for (i in name){
+                    printf("%s: ", name[i])
+                    if(widthBool == 0){
+                        sharpCount = int((value[i]/max_value)*width)
+                    }else{
+                        sharpCount = int(value[i]/width)
+                    }
+                    for(k=1; k <= sharpCount; k++){
+                        printf("#")
+                    }
+                    printf("\r\n")
+                }
+                if(none > 0 && none != ""){
+                    printf("None: ")
+                    if(widthBool == 0){
+                        sharpCount = int((none/max_value)*width)
+                    }else{
+                        sharpCount = int(none/width)
+                    }
+                    for(k=1; k <= sharpCount; k++){
+                        printf("#")
+                    }
+                    printf("\r\n")
+                }
+            }
+        ')
+    if [ -n "$NONE" ]; then
+        NONE=$(echo "$RESULT" | tail -1)
+        RESULT=$(echo "$RESULT" | head -n -1)
+    fi
+    RESULT=$(echo "$RESULT" | sort )
+    echo "$RESULT"
+    if [ -n "$NONE" ]; then
+        echo "$NONE"
+    fi
+}
+
+#funkcia vypisuje histogram pre prikaz age
+printHistoAge(){
+    NONE=$(echo "$NONE" | cut -d ':' -f 2)
+    NONE=$(echo "$NONE" | cut -d ' ' -f 2)
+    RESULT=$(echo "$RESULT" | awk -F ':' -v width="$WIDTH" -v widthDef="$WIDTH_DEF" -v none="$NONE" \
+        '
+            BEGIN{
+                widthBool = 0
+                if(width == ""){
+                    widthBool = 1
+                    if(widthDef == 1){
+                        width = 10000
+                    }
+                }
+            }{
+                if($1 == "0-5   "){
+                    name[1]=$1
+                    value[1]=$2
+                }else if($1 == "6-15  " ){
+                    name[2]=$1
+                    value[2]=$2
+                }else if($1 == "16-25 " ){
+                    name[3]=$1
+                    value[3]=$2
+                }else if($1 == "26-35 " ){
+                    name[4]=$1
+                    value[4]=$2
+                }else if($1 == "36-45 " ){
+                    name[5]=$1
+                    value[5]=$2
+                }else if($1 == "46-55 " ){
+                    name[6]=$1
+                    value[6]=$2
+                }else if($1 == "56-65 " ){
+                    name[7]=$1
+                    value[7]=$2
+                }else if($1 == "66-75 " ){
+                    name[8]=$1
+                    value[8]=$2
+                }else if($1 == "76-85 " ){
+                    name[9]=$1
+                    value[9]=$2
+                }else if($1 == "86-95 " ){
+                    name[10]=$1
+                    value[10]=$2
+                }else if($1 == "96-105" ){
+                    name[11]=$1
+                    value[11]=$2
+                }else if($1 == ">105  "){
+                    name[12]=$1
+                    value[12]=$2
+                }
+            } END {
+                max_value=1
+                if(widthBool == 0){
+                    for(i in name)
+                    {
+                        if(max_value < value[i]){
+                            max_value = value[i]
+                        }        
+                    }
+                    if(none > max_value){
+                        max_value=none
+                    }
+                }
+                for (j=1; j<13;j++){
+                    printf("%s: ", name[j])
+                    if(widthBool == 0){
+                        sharpCount = int((value[j]/max_value)*width)
+                    }else{
+                        sharpCount = int(value[j]/width)
+                    }
+                    for(k=1; k <= sharpCount; k++){
+                        printf("#")
+                    }
+                    printf("\r\n")
+                }
+                if(none > 0 && none != ""){
+                    printf("None: ")
+                    if(widthBool == 0){
+                        sharpCount = int((none/max_value)*width)
+                    }else{
+                        sharpCount = int(none/width)
+                    }
+                    for(k=1; k <= sharpCount; k++){
+                        printf("#")
+                    }
+                    printf("\r\n")
+                }
+            }
+        ')
+    echo "$RESULT"
+}
+
+#validacia cisla pri -s na vstupe
+numCheck(){
+    WIDTH_CHCK=$(echo "foo" | awk -v num="$WIDTH_NUM" '{if(num ~ /^[0-9]+$/){ printf(0);} else {printf(1);}}')
+}
+
+#validacia datumu pri filtroch -a -b
+dateChckF(){
+    dateChck=$(echo "$dateChck" | awk -F ',' \
+    '
+        {
+            if($1 ~ /^[0-9][0-9][0-9][0-9]-(0[1-9]|1[0-2])-([0][1-9]|[1-2][0-9]|3[0-1])/){
+                if($1 ~ /^[0-9]{4}-0[4]{1}.*$/ || $1 ~ /^[0-9]{4}-0[6]{1}.*$/ || $1 ~ /^[0-9]{4}-0[9]{1}.*$/ || $1 ~ /^[0-9]{4}-1[1]{1}.*$/){
+                    if($1 ~ /^.*(0[1-9]{1}|[1-2]{1}[0-9]{1}|3[0]{1})$/){
+                        print $0
+                    }else{
+                        print ""
+                    }
+                }else if($1 ~ /^[0-9]{4}-0[2]{1}.*$/){
+                    if($1 ~ /^.*(0[1-9]{1}|[1-2]{1}[1-9]{1})$/){
+                        print $0
+                    }else{
+                        print ""
+                    }
+                }else{
+                    print $0 
+                }
+            }else{
+                print ""
+            }
+        }
+    ')
+}
+
+# ------- spracovanie argumentov -------
+while [ "$#" -gt 0 ]
+do
+    case "$1" in
+    infected | merge | gender | age | daily | monthly | yearly | countries | districts | regions)
+        if [ $IS_COMMAND -eq 0 ]; then
+        COMMAND="$1"
+        IS_COMMAND=1    
+        shift
+        else
+            echo "ERROR: Too many commands" >&2
+            exit 1
+        fi
+        ;;
+    -h)
+        print_help
+        exit 0
+        ;;
+    -s)
+        if [ "$2" ]; then
+            WIDTH_NUM="$2"
+            numCheck
+            if [ "$WIDTH_CHCK" -eq 0 ]; then
+                if [ "$2" -ge 1 ]; then 
+                    WIDTH="$2"
+                    shift
+                else
+                    echo "ERROR: Negative numbers are not allowed" >&2
+                    exit 1
+                fi
+            fi
+        fi
+        IS_WIDTH=1
+        IS_FILTER=1
+        shift
+        ;;
+    -g)
+        GENDERCHCK=$(echo "$2" | grep 'M\|Z')
+        if [ -n "$GENDERCHCK" ]; then
+            GENDER="$2"
+            IS_GENDER=1
+            IS_FILTER=1
+        else
+            echo "ERROR: Invalid gender"
+            exit 1
+        fi
+        shift
+        shift
+        ;;
+    -b)
+        DATECHCK=$2
+        dateChckF
+        if [ -n "$DATECHCK" ]; then
+            DATE_B="$2"
+            IS_DATE_B=1
+            IS_FILTER=1
+        else
+            echo "ERROR: Date is not valid or date is missing" >&2
+            exit 1
+        fi
+        shift
+        shift
+        ;;
+    -a)
+        DATECHCK=$2
+        dateChckF
+        if [ -n "$DATECHCK" ]; then
+            DATE_A="$2"
+            IS_DATE_A=1
+            IS_FILTER=1
+        else
+            echo "ERROR: Date is not valid or date is missing" >&2
+            exit 1
+        fi
+        shift
+        shift
+        ;;
+    *.csv)
+        CSV_FILES="$CSV_FILES$(cat "$1")"
+        CSV_FILES="$CSV_FILES$(printf '\n\r')"
+        IS_FILE=1
+        shift
+        ;;
+    *.csv.gz)
+        CSV_FILES="$CSV_FILES$(gzip -d -c "$1")" 
+        CSV_FILES="$CSV_FILES$(printf '\n\r')"
+        IS_FILE=1
+        shift
+        ;;
+    *.csv.bz2)
+        CSV_FILES="$CSV_FILES$(bzcat "$1")" 
+        CSV_FILES="$CSV_FILES$(printf '\n\r')"
+        IS_FILE=1
+        shift
+        ;;
+    ?*)
+        echo "ERROR: Unknown command"
+        exit 1
+        ;;
+    esac
+done
+
+# ------- spracovanie vynimocnych stavov, validacia, filtre -------
+
+# nebol zadany subor, cita z stdin
+if [ $IS_FILE -eq 0 ]; then
+    CSV_FILES=$(cat)
+fi
+
+#odstranenie hlavicky
+if [ -n "$CSV_FILES" ]; then
+   CSV_FILES=$(echo "$CSV_FILES" | awk '!/id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs/')
+fi
+
+# validacia
+if [ "$COMMAND" = "merge" ] && [ "$IS_FILTER" -eq 0 ]
+then
+    :
+elif [ "$COMMAND" = "" ]
+then
+    :
+else
+    CSV_FILES=$(echo "$CSV_FILES" | awk '!/^[[:space:]]*$/' | sed 's/ //g')
+    validateDate
+    validateAge
+fi
+
+
+
+# gender filter
+if [ $IS_GENDER -eq 1 ]; then
+    CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v gender="$GENDER" '{ if ($4 == gender) print $0}')
+fi
+
+# date A filter
+if [ $IS_DATE_A -eq 1 ]; then
+    if [ -n "$DATE_A" ]; then
+        CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v date="$DATE_A" '{ if ($2 > date || $2 == date) print $0}')
+    fi
+fi
+
+# date B filter
+if [ $IS_DATE_B -eq 1 ]; then
+    if [ -n "$DATE_B" ]; then
+        CSV_FILES=$(echo "$CSV_FILES" | awk -F ',' -v date="$DATE_B" '{ if ($2 < date || $2 == date) print $0}')
+    fi
+fi
+
+# nebol zadany prikaz
+if [ $IS_COMMAND -eq 0 ]; then
+    echo "$HEAD"
+    if [ -n "$CSV_FILES" ]; then
+        echo "$CSV_FILES"
+    fi
+    exit 0
+fi
+
+# ------- spracovanie prikazov -------
+case $COMMAND in
+    "infected")
+        if [ "$IS_WIDTH" -eq 1 ];then
+            echo "ERROR: This command combination is not allowed"
+            exit 1
+        else
+            INF_COUNT=$(echo "$CSV_FILES" | wc -l )
+            echo "$INF_COUNT"
+            exit 0
+        fi
+        ;;
+    "merge")
+        if [ "$IS_WIDTH" -eq 1 ];then
+            echo "ERROR: This command combination is not allowed"
+            exit 1
+        else
+            echo "$HEAD"
+            echo "$CSV_FILES"
+            exit 0
+        fi
+        ;;
+    "gender")
+        printGender
+        if [ "$IS_WIDTH" -eq 1 ]; then
+            WIDTH_DEF="4"
+            GND_COUNT=$(echo "$RESULT" | wc -l)
+            if [ "$GND_COUNT" -eq 3 ]; then
+                NONE=$(echo "$RESULT" | tail -1)
+                RESULT=$(echo "$RESULT" | head -n 2)
+            fi
+            printHistoDateG
+        else
+            echo "$RESULT"
+        fi
+        exit 0
+        ;;
+    "age")
+        printAge
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF="1"
+            AGE_COUNT=$(echo "$RESULT" | wc -l)
+            if [ "$AGE_COUNT" -eq 13 ]; then
+                #oddelenie None od zvysnych hodnot, kvoli korektnemu vypisu
+                NONE=$(echo "$RESULT" | tail -1)
+                RESULT=$(echo "$RESULT" | head -n 12)
+            fi
+            printHistoAge
+        else
+            echo "$RESULT"
+        fi
+        exit 0
+        ;;
+    "daily")
+        printDaily
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=1
+            printHistoDateG
+        else
+            printResNone
+        fi
+        exit 0
+        ;;
+    "monthly")
+        printMonthly
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=2
+            printHistoDateG
+        else
+            printResNone
+        fi
+        exit 0
+        ;;
+    "yearly")
+        printYearly
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=3
+            printHistoDateG
+        else
+            printResNone
+        fi
+        exit 0
+        ;;
+    "countries")
+        printCountries
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=1
+            printHistoLand
+        else
+            echo "$RESULT"
+        fi
+        exit 0
+        ;;
+    "districts")
+        printDistricts
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=2
+            printHistoLand
+        else
+            echo "$RESULT"
+        fi
+        exit 0
+        ;;
+    "regions")
+        printRegions
+        if [ $IS_WIDTH -eq 1 ]; then
+            WIDTH_DEF=3
+            printHistoLand
+        else
+            echo "$RESULT"
+        fi
+        exit 0
+        ;;
+esac
